@@ -1,6 +1,7 @@
 const async = require('async');
 import { __ } from 'embark-i18n';
 const Web3 = require('web3');
+const util = require('util');
 
 const { blockchain: blockchainConstants } = require('embark-core/constants');
 import { dappPath, hexToNumber } from 'embark-utils';
@@ -49,7 +50,7 @@ export default class TransactionLogger {
     this.writeLogFile = async.cargo((tasks, callback) => {
       let appendThis = '';
       tasks.forEach(task => {
-        appendThis += `"${new Date().getTime()}":${JSON.stringify(task)},\n`;
+        appendThis += `"${new Date().getTime()}":${util.inspect(task)},\n`;
       });
       this.fs.appendFile(this.logFile, appendThis, (err) => {
         if (err) {

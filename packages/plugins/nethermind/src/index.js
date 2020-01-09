@@ -61,8 +61,6 @@ class Nethermind {
   _getNodeState(err, version, cb) {
     if (err) return cb({ name: "Ethereum node not found", status: 'off' });
 
-    // let versionNumber = version.split("-")[0];
-    console.log('Version', version);
     return cb({ name: `${NETHERMIND_NAME} (Ethereum)`, status: 'on' });
   }
 
