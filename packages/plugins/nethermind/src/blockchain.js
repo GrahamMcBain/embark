@@ -32,7 +32,7 @@ class Blockchain {
     this.config = {
       silent: this.userConfig.silent,
       client: this.userConfig.client,
-      ethereumClientBin: this.userConfig.ethereumClientBin || this.userConfig.client,
+      ethereumClientBin: this.userConfig.ethereumClientBin,
       networkType: this.userConfig.networkType || clientClass.DEFAULTS.NETWORK_TYPE,
       networkId: this.userConfig.networkId || clientClass.DEFAULTS.NETWORK_ID,
       genesisBlock: this.userConfig.genesisBlock || false,
@@ -100,7 +100,7 @@ class Blockchain {
       this.logger.error(__(spaceMessage, 'genesisBlock'));
       process.exit(1);
     }
-    this.client = new clientClass({config: this.config, env: this.env, isDev: this.isDev});
+    this.client = new clientClass({config: this.config, env: this.env, isDev: this.isDev, logger: this.logger});
 
     this.initStandaloneProcess();
   }
@@ -178,19 +178,8 @@ class Blockchain {
           next();
         });
       },
-      function init(next) {
-        if (self.isDev) {
-          return self.initDevChain((err) => {
-            next(err);
-          });
-        }
-        return self.initChainAndGetAddress((err, addr) => {
-          address = addr;
-          next(err);
-        });
-      },
       function getMainCommand(next) {
-        self.client.mainCommand(address, function (cmd, args) {
+        self.client.mainCommand(address, (cmd, args) => {
           next(null, cmd, args);
         }, true);
       }
@@ -215,19 +204,14 @@ class Blockchain {
         }
       });
 
-      // TOCHECK I don't understand why stderr and stdout are reverted.
-      // This happens with Geth and Parity, so it does not seems a client problem
-      self.child.stdout.on('data', (data) => {
+      self.child.stderr.on('data', (data) => {
         self.logger.info(`${self.client.name} error: ${data}`);
       });
 
-      self.child.stderr.on('data', async (data) => {
+      self.child.stdout.on('data', async (data) => {
         data = data.toString();
         if (!self.readyCalled && self.client.isReady(data)) {
           self.readyCalled = true;
-          // if (self.config.proxy) {
-          // await self.setupProxy();
-          // }
           self.readyCallback();
         }
         self.logger.info(`${self.client.name}: ${data}`);
@@ -259,9 +243,6 @@ class Blockchain {
     if (this.onReadyCallback) {
       this.onReadyCallback();
     }
-    if (this.config.mineWhenNeeded && !this.isDev) {
-      this.miner = this.client.getMiner();
-    }
   }
 
   kill() {
@@ -285,125 +266,6 @@ class Blockchain {
         this.logger.warn((__('WARNING! Ethereum client version unsupported, for best results please use a version in range') + ' ' + this.client.versSupported));
       }
       callback();
-    });
-  }
-
-  initDevChain(callback) {
-    const self = this;
-    const ACCOUNTS_ALREADY_PRESENT = 'accounts_already_present';
-    // Init the dev chain
-    self.client.initDevChain(self.config.datadir, (err) => {
-      if (err) {
-        return callback(err);
-      }
-
-      const accountsToCreate = self.config.account && self.config.account.numAccounts;
-      if (!accountsToCreate) return callback();
-
-      // Create other accounts
-      async.waterfall([
-        function listAccounts(next) {
-          self.runCommand(self.client.listAccountsCommand(), {}, (err, stdout, _stderr) => {
-            if (err || stdout === undefined || stdout.indexOf("Fatal") >= 0) {
-              console.log(__("no accounts found").green);
-              return next();
-            }
-            // List current addresses
-            self.config.unlockAddressList = self.client.parseListAccountsCommandResultToAddressList(stdout);
-            // Count current addresses and remove the default account from the count (because password can be different)
-            let addressCount = self.config.unlockAddressList.length;
-            if (addressCount < accountsToCreate) {
-              next(null, accountsToCreate - addressCount);
-            } else {
-              next(ACCOUNTS_ALREADY_PRESENT);
-            }
-          });
-        },
-        function newAccounts(accountsToCreate, next) {
-          var accountNumber = 0;
-          async.whilst(
-            function () {
-              return accountNumber < accountsToCreate;
-            },
-            function (callback) {
-              accountNumber++;
-              self.runCommand(self.client.newAccountCommand(), {}, (err, stdout, _stderr) => {
-                if (err) {
-                  return callback(err, accountNumber);
-                }
-                self.config.unlockAddressList.push(self.client.parseNewAccountCommandResultToAddress(stdout));
-                callback(null, accountNumber);
-              });
-            },
-            function (err) {
-              next(err);
-            }
-          );
-        }
-      ], (err) => {
-        if (err && err !== ACCOUNTS_ALREADY_PRESENT) {
-          console.log(err);
-          return callback(err);
-        }
-        callback();
-      });
-    });
-  }
-
-  initChainAndGetAddress(callback) {
-    const self = this;
-    let address = null;
-    const ALREADY_INITIALIZED = 'already';
-
-    // ensure datadir exists, bypassing the interactive liabilities prompt.
-    self.datadir = self.config.datadir;
-
-    async.waterfall([
-      function makeDir(next) {
-        fs.mkdirp(self.datadir, (err, _result) => {
-          next(err);
-        });
-      },
-      function listAccounts(next) {
-        self.runCommand(self.client.listAccountsCommand(), {}, (err, stdout, _stderr) => {
-          if (err || stdout === undefined || stdout.indexOf("Fatal") >= 0) {
-            self.logger.info(__("no accounts found").green);
-            return next();
-          }
-          let firstAccountFound = self.client.parseListAccountsCommandResultToAddress(stdout);
-          if (firstAccountFound === undefined || firstAccountFound === "") {
-            console.log(__("no accounts found").green);
-            return next();
-          }
-          self.logger.info(__("already initialized").green);
-          address = firstAccountFound;
-          next(ALREADY_INITIALIZED);
-        });
-      },
-      function genesisBlock(next) {
-        //There's no genesis init with Parity. Custom network are set in the chain property at startup
-        if (!self.config.genesisBlock || self.client.name === constants.blockchain.clients.parity) {
-          return next();
-        }
-        self.logger.info(__("initializing genesis block").green);
-        self.runCommand(self.client.initGenesisCommmand(), {}, (err, _stdout, _stderr) => {
-          next(err);
-        });
-      },
-      function newAccount(next) {
-        self.runCommand(self.client.newAccountCommand(), {}, (err, stdout, _stderr) => {
-          if (err) {
-            return next(err);
-          }
-          address = self.client.parseNewAccountCommandResultToAddress(stdout);
-          next();
-        });
-      }
-    ], (err) => {
-      if (err === ALREADY_INITIALIZED) {
-        err = null;
-      }
-      callback(err, address);
     });
   }
 }

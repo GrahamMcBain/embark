@@ -1,14 +1,9 @@
 import {__} from 'embark-i18n';
-import {dappPath} from 'embark-utils';
-import * as fs from 'fs-extra';
 const async = require('async');
-const path = require('path');
-const os = require('os');
 const semver = require('semver');
-const constants = require('embark-core/constants');
 
 const DEFAULTS = {
-  "BIN": "Nethermind.Runner.exe",
+  "BIN": "Nethermind.Runner",
   "VERSIONS_SUPPORTED": ">=1.4.0",
   "NETWORK_TYPE": "custom",
   "NETWORK_ID": 1337,
@@ -18,11 +13,7 @@ const DEFAULTS = {
   "TARGET_GAS_LIMIT": 8000000
 };
 
-const safePush = function (set, value) {
-  if (set.indexOf(value) === -1) {
-    set.push(value);
-  }
-};
+const NETHERMIND_NAME = 'nethermind';
 
 class NethermindClient {
 
@@ -31,86 +22,79 @@ class NethermindClient {
   }
 
   constructor(options) {
-    this.config = options && options.hasOwnProperty('config') ? options.config : {};
-    this.env = options && options.hasOwnProperty('env') ? options.env : 'development';
-    this.isDev = options && options.hasOwnProperty('isDev') ? options.isDev : (this.env === 'development');
-    this.name = constants.blockchain.clients.parity;
-    this.prettyName = "Parity-Ethereum (https://github.com/paritytech/parity-ethereum)";
+    this.logger = options.logger;
+    this.config = options.hasOwnProperty('config') ? options.config : {};
+    this.env = options.hasOwnProperty('env') ? options.env : 'development';
+    this.isDev = options.hasOwnProperty('isDev') ? options.isDev : (this.env === 'development');
+    this.name = NETHERMIND_NAME;
+    this.prettyName = "Nethermind (https://github.com/NethermindEth/nethermind)";
     this.bin = this.config.ethereumClientBin || DEFAULTS.BIN;
     this.versSupported = DEFAULTS.VERSIONS_SUPPORTED;
   }
 
   isReady(data) {
-    return data.indexOf('Public node URL') > -1;
-  }
-
-  /**
-   * Check if the client needs some sort of 'keep alive' transactions to avoid freezing by inactivity
-   * @returns {boolean} if keep alive is needed
-   */
-  needKeepAlive() {
-    return false;
+    return data.indexOf('Running server, url:') > -1;
   }
 
   commonOptions() {
-    let config = this.config;
-    let cmd = [];
+    const config = this.config;
+    const cmd = [];
 
     cmd.push(this.determineNetworkType(config));
 
-    if (config.networkId) {
-      cmd.push(`--network-id=${config.networkId}`);
-    }
-
     if (config.datadir) {
-      cmd.push(`--base-path=${config.datadir}`);
+      // There isn't a real data dir, so at least we put the keys there
+      cmd.push(`--KeyStore.KeyStoreDirectory=${config.datadir}`);
     }
 
     if (config.syncMode === 'light') {
-      cmd.push("--light");
+      this.logger.warn('Light sync mode does not exist in Nethermind. Switching to fast');
+      cmd.push("--Sync.FastSync=true");
     } else if (config.syncMode === 'fast') {
-      cmd.push("--pruning=fast");
-    } else if (config.syncMode === 'full') {
-      cmd.push("--pruning=archive");
+      cmd.push("--Sync.FastSync=true");
     }
 
     // In dev mode we store all users passwords in the devPassword file, so Parity can unlock all users from the start
-    if (this.isDev) cmd.push(`--password=${config.account.devPassword}`);
-    else if (config.account && config.account.password) {
-      cmd.push(`--password=${config.account.password}`);
+    if (this.isDev && config.account && config.account.numAccounts) {
+      cmd.push(`--Wallet.DevAccounts=${config.account.numAccounts}`);
+    } else if (config.account && config.account.password) {
+      // TODO find a way to see if we can set a password
+      // cmd.push(`--password=${config.account.password}`);
     }
 
-    if (Number.isInteger(config.verbosity) && config.verbosity >= 0 && config.verbosity <= 5) {
-      switch (config.verbosity) {
-        case 0: // No option to silent Parity, go to less verbose
-        case 1:
-          cmd.push("--logging=error");
-          break;
-        case 2:
-          cmd.push("--logging=warn");
-          break;
-        case 3:
-          cmd.push("--logging=info");
-          break;
-        case 4: // Debug is the max verbosity for Parity
-        case 5:
-          cmd.push("--logging=debug");
-          break;
-        default:
-          cmd.push("--logging=info");
-          break;
-      }
-    }
-
-    if (this.runAsArchival(config)) {
-      cmd.push("--pruning=archive");
-    }
+    // TODO reanable this when the log level is usable
+    //  currently, you have to restart the client for the log level to apply and even then, it looks bugged
+    // if (Number.isInteger(config.verbosity) && config.verbosity >= 0 && config.verbosity <= 5) {
+    //   switch (config.verbosity) {
+    //     case 0:
+    //       cmd.push("--log=OFF");
+    //       break;
+    //     case 1:
+    //       cmd.push("--log=ERROR");
+    //       break;
+    //     case 2:
+    //       cmd.push("--log=WARN");
+    //       break;
+    //     case 3:
+    //       cmd.push("--log=INFO");
+    //       break;
+    //     case 4:
+    //       cmd.push("--log=DEBUG");
+    //       break;
+    //     case 5:
+    //       cmd.push("--log=TRACE");
+    //       break;
+    //     default:
+    //       cmd.push("--log=INFO");
+    //       break;
+    //   }
+    // }
 
     return cmd;
   }
 
   getMiner() {
-    console.warn(__("Miner requested, but Parity does not embed a miner! Use Geth or install ethminer (https://github.com/ethereum-mining/ethminer)").yellow);
+    console.warn(__("Miner requested, but Nethermind does not embed a miner! Use Geth or install ethminer (https://github.com/ethereum-mining/ethminer)").yellow);
     return;
   }
 
@@ -120,7 +104,8 @@ class NethermindClient {
 
   determineVersionCommand() {
     // FIXME this is a different bin than the normal one. Find a way to put this in configs
-    return "Nethermind.Launcher.exe --version";
+    // Maybe check if ethereumBin is used and replace the name of the executable
+    return "Nethermind.Launcher --version";
   }
 
   parseVersion(rawVersionOutput) {
@@ -130,10 +115,6 @@ class NethermindClient {
       parsed = match[1].trim();
     }
     return parsed;
-  }
-
-  runAsArchival(config) {
-    return config.networkId === 1337 || config.archivalMode;
   }
 
   isSupportedVersion(parsedVersion) {
@@ -153,232 +134,93 @@ class NethermindClient {
 
   determineNetworkType(config) {
     if (this.isDev) {
-      return "--chain=dev";
+      return "--config=ndm_consumer_local";
     }
-    if (config.networkType === 'rinkeby') {
-      console.warn(__('Parity does not support the Rinkeby PoA network, switching to Kovan PoA network'));
-      config.networkType = 'kovan';
-    } else if (config.networkType === 'testnet') {
-      console.warn(__('Parity "testnet" corresponds to Kovan network, switching to Ropsten to be compliant with Geth parameters'));
+    if (config.networkType === 'testnet') {
       config.networkType = "ropsten";
     }
-    if (config.genesisBlock) {
-      config.networkType = config.genesisBlock;
-    }
-    return "--chain=" + config.networkType;
-  }
-
-  newAccountCommand() {
-    return this.bin + " " + this.commonOptions().join(' ') + " account new ";
-  }
-
-  parseNewAccountCommandResultToAddress(data = "") {
-    return data.replace(/^\n|\n$/g, "");
-  }
-
-  listAccountsCommand() {
-    return this.bin + " " + this.commonOptions().join(' ') + " account list ";
-  }
-
-  parseListAccountsCommandResultToAddress(data = "") {
-    return data.replace(/^\n|\n$/g, "").split('\n')[0];
-  }
-
-  parseListAccountsCommandResultToAddressList(data = "") {
-    const list = data.split('\n');
-    return list.filter(acc => acc);
-  }
-
-  parseListAccountsCommandResultToAddressCount(data = "") {
-    const count = this.parseListAccountsCommandResultToAddressList(data).length;
-    return (count > 0 ? count : 0);
+    return "--config=" + config.networkType;
   }
 
   determineRpcOptions(config) {
     let cmd = [];
-    cmd.push("--port=" + config.port);
-    cmd.push("--jsonrpc-port=" + config.rpcPort);
-    cmd.push("--jsonrpc-interface=" + (config.rpcHost === 'localhost' ? 'local' : config.rpcHost));
-    if (config.rpcCorsDomain) {
-      if (config.rpcCorsDomain === '*') {
-        console.warn('==================================');
-        console.warn(__('rpcCorsDomain set to "all"'));
-        console.warn(__('make sure you know what you are doing'));
-        console.warn('==================================');
-      }
-      cmd.push("--jsonrpc-cors=" + (config.rpcCorsDomain === '*' ? 'all' : config.rpcCorsDomain));
-    } else {
-      console.warn('==================================');
-      console.warn(__('warning: cors is not set'));
-      console.warn('==================================');
-    }
-    cmd.push("--jsonrpc-hosts=all");
+    cmd.push("--Network.DiscoveryPort=" + config.port);
+    cmd.push("--JsonRpc.Port=" + config.rpcPort);
+    cmd.push("--JsonRpc.Host=" + config.rpcHost);
+    // Doesn't seem to support changing CORS
+    // if (config.rpcCorsDomain) {
+    //   if (config.rpcCorsDomain === '*') {
+    //     console.warn('==================================');
+    //     console.warn(__('rpcCorsDomain set to "all"'));
+    //     console.warn(__('make sure you know what you are doing'));
+    //     console.warn('==================================');
+    //   }
+    //   cmd.push("--jsonrpc-cors=" + (config.rpcCorsDomain === '*' ? 'all' : config.rpcCorsDomain));
+    // } else {
+    //   console.warn('==================================');
+    //   console.warn(__('warning: cors is not set'));
+    //   console.warn('==================================');
+    // }
     return cmd;
   }
 
   determineWsOptions(config) {
     let cmd = [];
     if (config.wsRPC) {
-      cmd.push("--ws-port=" + config.wsPort);
-      cmd.push("--ws-interface=" + (config.wsHost === 'localhost' ? 'local' : config.wsHost));
-      if (config.wsOrigins) {
-        const origins = config.wsOrigins.split(',');
-        if (origins.includes('*') || origins.includes("all")) {
-          console.warn('==================================');
-          console.warn(__('wsOrigins set to "all"'));
-          console.warn(__('make sure you know what you are doing'));
-          console.warn('==================================');
-          cmd.push("--ws-origins=all");
-        } else {
-          cmd.push("--ws-origins=" + config.wsOrigins);
-        }
-      } else {
-        console.warn('==================================');
-        console.warn(__('warning: wsOrigins is not set'));
-        console.warn('==================================');
-      }
-      cmd.push("--ws-hosts=all");
+      cmd.push("--Init.WebSocketsEnabled=true");
     }
     return cmd;
-  }
-
-  initDevChain(datadir, callback) {
-    // Parity requires specific initialization also for the dev chain
-    const self = this;
-    const keysDataDir = datadir + '/keys/DevelopmentChain';
-    async.waterfall([
-      function makeDir(next) {
-        fs.mkdirp(keysDataDir, (err, _result) => {
-          next(err);
-        });
-      },
-      function createDevAccount(next) {
-        self.createDevAccount(keysDataDir, next);
-      },
-      function mkDevPasswordDir(next) {
-        fs.mkdirp(path.dirname(self.config.account.devPassword), (err, _result) => {
-          next(err);
-        });
-      },
-      function getText(next) {
-        if (!self.config.account.password) {
-          return next(null, os.EOL + 'dev_password');
-        }
-        fs.readFile(dappPath(self.config.account.password), {encoding: 'utf8'}, (err, content) => {
-          next(err, os.EOL + content);
-        });
-      },
-      function updatePasswordFile(passwordList, next) {
-        fs.writeFile(self.config.account.devPassword, passwordList, next);
-      }
-    ], (err) => {
-      callback(err);
-    });
-  }
-
-  createDevAccount(keysDataDir, cb) {
-    const devAccountWallet = keysDataDir + '/dev.wallet';
-    fs.writeFile(devAccountWallet, JSON.stringify(DEFAULTS.DEV_WALLET), function (err) {
-      if (err) {
-        return cb(err);
-      }
-      cb();
-    });
   }
 
   mainCommand(address, done) {
     let self = this;
     let config = this.config;
     let rpc_api = this.config.rpcApi;
-    let ws_api = this.config.wsApi;
     let args = [];
-    async.series([
+    async.waterfall([
       function commonOptions(callback) {
         let cmd = self.commonOptions();
         args = args.concat(cmd);
-        callback(null, cmd);
+        callback();
       },
       function rpcOptions(callback) {
         let cmd = self.determineRpcOptions(self.config);
         args = args.concat(cmd);
-        callback(null, cmd);
+        callback();
       },
       function wsOptions(callback) {
         let cmd = self.determineWsOptions(self.config);
         args = args.concat(cmd);
-        callback(null, cmd);
+        callback();
       },
       function dontGetPeers(callback) {
         if (config.nodiscover) {
-          args.push("--no-discovery");
-          return callback(null, "--no-discovery");
+          args.push("--Init.DiscoveryEnabled=false");
+          return callback();
         }
-        callback(null, "");
+        callback();
       },
       function vmDebug(callback) {
         if (config.vmdebug) {
-          args.push("--tracing on");
-          return callback(null, "--tracing on");
+          args.push("----Init.StoreTraces=true");
+          return callback();
         }
-        callback(null, "");
+        callback();
       },
       function maxPeers(callback) {
-        let cmd = "--max-peers=" + config.maxpeers;
-        args.push(cmd);
-        callback(null, cmd);
+        args.push("--Network.ActivePeersMaxCount=" + config.maxpeers);
+        callback();
       },
       function bootnodes(callback) {
         if (config.bootnodes && config.bootnodes !== "" && config.bootnodes !== []) {
-          args.push("--bootnodes=" + config.bootnodes);
-          return callback(null, "--bootnodes=" + config.bootnodes);
+          args.push("--Discovery.Bootnodes=" + config.bootnodes);
+          return callback();
         }
-        callback("");
-      },
-      function whisper(callback) {
-        if (config.whisper) {
-          safePush(rpc_api, 'shh');
-          safePush(rpc_api, 'shh_pubsub');
-          safePush(ws_api, 'shh');
-          safePush(ws_api, 'shh_pubsub');
-          args.push("--whisper");
-          return callback(null, "--whisper");
-        }
-        callback("");
+        callback();
       },
       function rpcApi(callback) {
-        args.push('--jsonrpc-apis=' + rpc_api.join(','));
-        callback(null, '--jsonrpc-apis=' + rpc_api.join(','));
-      },
-      function wsApi(callback) {
-        args.push('--ws-apis=' + ws_api.join(','));
-        callback(null, '--ws-apis=' + ws_api.join(','));
-      },
-      function accountToUnlock(callback) {
-        if (self.isDev) {
-          let unlockAddressList = self.config.unlockAddressList ? self.config.unlockAddressList : DEFAULTS.DEV_ACCOUNT;
-          args.push("--unlock=" + unlockAddressList);
-          return callback(null, "--unlock=" + unlockAddressList);
-        }
-        let accountAddress = "";
-        if (config.account && config.account.address) {
-          accountAddress = config.account.address;
-        } else {
-          accountAddress = address;
-        }
-        if (accountAddress && !self.isDev) {
-          args.push("--unlock=" + accountAddress);
-          return callback(null, "--unlock=" + accountAddress);
-        }
-        callback(null, "");
-      },
-      function gasLimit(callback) {
-        if (config.targetGasLimit) {
-          args.push("--gas-floor-target=" + config.targetGasLimit);
-          return callback(null, "--gas-floor-target=" + config.targetGasLimit);
-        }
-        // Default Parity gas limit is 4700000: let's set to the geth default
-        args.push("--gas-floor-target=" + DEFAULTS.TARGET_GAS_LIMIT);
-        return callback(null, "--gas-floor-target=" + DEFAULTS.TARGET_GAS_LIMIT);
+        args.push('--JsonRpc.EnabledModules=' + rpc_api.join(','));
+        callback();
       },
       function customOptions(callback) {
         if (config.customOptions) {
@@ -386,9 +228,9 @@ class NethermindClient {
             config.customOptions = config.customOptions.join(' ');
           }
           args.push(config.customOptions);
-          return callback(null, config.customOptions);
+          return callback();
         }
-        callback(null, '');
+        callback();
       }
     ], function (err) {
       if (err) {
