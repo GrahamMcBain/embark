@@ -1,7 +1,7 @@
 import { Config, Events, fs, TemplateGenerator } from 'embark-core';
 import { Engine } from 'embark-engine';
 import { __ } from 'embark-i18n';
-import { dappPath, embarkPath, joinPath, setUpEnv } from 'embark-utils';
+import { dappPath, joinPath, setUpEnv } from 'embark-utils';
 import { Logger, LogLevels } from 'embark-logger';
 let async = require('async');
 const constants = require('embark-core/constants');
@@ -58,13 +58,22 @@ class EmbarkController {
     });
 
     engine.init({}, () => {
+      Object.assign(engine.config.blockchainConfig, { isStandalone: true });
+
       engine.registerModuleGroup("coreComponents");
       engine.registerModuleGroup("blockchainStackComponents");
       engine.registerModuleGroup("blockchain");
 
+      // load custom plugins
+      engine.loadDappPlugins();
+      let pluginList = engine.plugins.listPlugins();
+      if (pluginList.length > 0) {
+        engine.logger.info(__("loaded plugins") + ": " + pluginList.join(", "));
+      }
+
       engine.startEngine(async () => {
         try {
-          const alreadyStarted = await engine.events.request2("blockchain:node:start", Object.assign(engine.config.blockchainConfig, { isStandalone: true }));
+          const alreadyStarted = await engine.events.request2("blockchain:node:start", engine.config.blockchainConfig);
           if (alreadyStarted) {
             engine.logger.warn(__('Blockchain process already started. No need to run `embark blockchain`'));
             process.exit(0);
@@ -630,7 +639,7 @@ class EmbarkController {
             return callback(e);
           }
           callback();
-        })()
+        })();
       },
       function generateUI(callback) {
         if (engine.config.embarkConfig.app) {

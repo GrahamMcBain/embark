@@ -1,5 +1,4 @@
 import {__} from 'embark-i18n';
-const fs = require('fs-extra');
 const async = require('async');
 const {spawn, exec} = require('child_process');
 const path = require('path');

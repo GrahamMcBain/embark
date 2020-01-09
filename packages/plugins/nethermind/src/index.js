@@ -79,7 +79,7 @@ class Nethermind {
     if (this.blockchainConfig.isStandalone) {
       return new BlockchainClient(this.blockchainConfig, {
         clientName: NETHERMIND_NAME,
-        env: this.embark.env,
+        env: this.embark.config.env,
         certOptions: this.embark.config.webServerConfig.certOptions,
         logger: this.logger,
         events: this.events,
